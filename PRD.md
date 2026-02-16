@@ -64,12 +64,12 @@ Highest-risk piece — ScreenCaptureKit has macOS permission requirements, the R
 5. Handle permission denied — print instructions pointing to System Settings → Privacy & Security → Screen Recording
 
 **Verification:**
-- [ ] Play a YouTube video, run binary, stop after 10s
-- [ ] Open output WAV in QuickTime/Audacity — audio is audible and correct
-- [ ] Run without Screen Recording permission — get clear error message
-- [ ] Run with no audio playing — produces silent WAV without crashing
+- [x] Play a YouTube video, run binary, stop after 10s
+- [x] Open output WAV in QuickTime/Audacity — audio is audible and correct
+- [x] Run without Screen Recording permission — get clear error message
+- [x] Run with no audio playing — produces silent WAV without crashing
 
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
 
 ---
 
@@ -294,7 +294,7 @@ Phase 5 can be built in parallel with Phases 1-4.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | System Audio Capture | `[ ] Not started` |
+| 1 | System Audio Capture | `[x] Complete` |
 | 2 | Microphone Capture | `[ ] Not started` |
 | 3 | Mixing + Resampling | `[ ] Not started` |
 | 4 | Chunking | `[ ] Not started` |
