@@ -87,12 +87,12 @@ Isolate mic issues (device selection, sample rates) from system audio.
 5. Handle permission denied — print Microphone permission instructions
 
 **Verification:**
-- [ ] Speak into mic, stop, verify WAV has your voice
+- [x] Speak into mic, stop, verify WAV has your voice
 - [ ] Specify non-existent device name — get clear error
-- [ ] Run without Microphone permission — get clear error message
+- [x] Run without Microphone permission — get clear error message
 - [ ] Test with both built-in mic and headset
 
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
 
 ---
 
@@ -295,7 +295,7 @@ Phase 5 can be built in parallel with Phases 1-4.
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | System Audio Capture | `[x] Complete` |
-| 2 | Microphone Capture | `[ ] Not started` |
+| 2 | Microphone Capture | `[x] Complete` |
 | 3 | Mixing + Resampling | `[ ] Not started` |
 | 4 | Chunking | `[ ] Not started` |
 | 5 | Transcription API Client | `[ ] Not started` |
