@@ -75,10 +75,17 @@ fn parse_config() -> Config {
         .unwrap_or(&default_output_dir)
         .to_string();
 
+    // Positional arg (first non-flag) or --output= sets transcript path
     let output = args
         .iter()
         .find_map(|a| a.strip_prefix("--output="))
-        .map(|s| s.to_string());
+        .map(|s| s.to_string())
+        .or_else(|| {
+            args.iter()
+                .skip(1)
+                .find(|a| !a.starts_with("--"))
+                .cloned()
+        });
 
     let no_transcribe = args.iter().any(|a| a == "--no-transcribe");
     let save_audio = args.iter().any(|a| a == "--save-audio");
@@ -108,14 +115,15 @@ fn print_help() {
     eprintln!("scribe — capture system audio + mic, transcribe locally
 
 USAGE:
-    scribe [OPTIONS]
+    scribe [FILE] [OPTIONS]
 
 By default, captures both channels and transcribes using a local
 whisper server. Falls back to OpenAI API if OPENAI_API_KEY is set.
 Writes transcript to ./transcript-{{date}}.md
 
 OPTIONS:
-    --output=PATH          Transcript output path (default: transcript-{{date}}.md)
+    FILE                   Transcript output path (positional arg)
+    --output=PATH          Same as above, as a flag (default: transcript-{{date}}.md)
     --output-dir=PATH      Intermediate files directory (default: /tmp/scribe)
     --chunk-duration=N     Chunk length in seconds (default: 30)
     --overlap=N            Overlap between chunks in seconds (default: 0)
@@ -156,19 +164,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    // Resolve transcription backend: local (default) → API key → recording only
+    // Resolve transcription backend: --api-url → local (default) → recording only
+    let has_api_url = args.iter().any(|a| a.starts_with("--api-url="));
     let _local_server;
     let live_transcribe_config;
 
     if config.no_transcribe || !matches!(&config.mode, CaptureMode::Both(_)) {
         _local_server = None;
         live_transcribe_config = None;
-    } else if let Ok(tc) = transcribe_config(&args) {
-        // Explicit API key takes priority
+    } else if has_api_url {
+        // Explicit --api-url: use remote API
         _local_server = None;
-        live_transcribe_config = Some(tc);
+        live_transcribe_config = Some(transcribe_config(&args)?);
     } else {
-        // Try local whisper server
+        // Default: local whisper server
         let model = args
             .iter()
             .find_map(|a| a.strip_prefix("--model="))
@@ -185,8 +194,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 eprintln!("No transcription available — recording only");
-                eprintln!("  Local: {e}");
-                eprintln!("  API: OPENAI_API_KEY not set");
+                eprintln!("  {e}");
                 _local_server = None;
                 live_transcribe_config = None;
             }

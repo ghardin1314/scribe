@@ -40,7 +40,8 @@ cargo install --path .
 
 ```bash
 scribe                              # capture + transcribe, writes transcript-{date}.md
-scribe --output=meeting.md          # custom output path
+scribe meeting.md                   # custom output path
+scribe --output=meeting.md          # same, as a flag
 scribe --chunk-duration=15          # shorter chunks (default: 30s)
 scribe --no-transcribe              # capture only, no transcription
 scribe --save-audio                 # keep WAV files after transcription
@@ -58,11 +59,11 @@ scribe --model=small                # faster, less accurate
 scribe --model=large                # slower, more accurate
 ```
 
-**OpenAI API:** If `OPENAI_API_KEY` is set, uses the OpenAI Whisper API instead of local.
+**Remote API:** Only used when you explicitly pass `--api-url`. Requires `OPENAI_API_KEY`.
 
 ```bash
 export OPENAI_API_KEY=sk-...
-scribe                              # uses OpenAI API
+scribe --api-url=https://api.openai.com/v1/audio/transcriptions
 scribe --api-url=http://localhost:8000/v1/audio/transcriptions  # custom endpoint
 ```
 
