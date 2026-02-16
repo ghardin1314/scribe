@@ -17,6 +17,7 @@ pub struct ChunkPair {
 pub struct PipelineConfig {
     pub transcribe: TranscribeConfig,
     pub output_dir: String,
+    pub transcript_path: PathBuf,
     pub concurrency: usize,
     pub save_audio: bool,
 }
@@ -168,9 +169,8 @@ fn process_chunk(
         .open(&jsonl_path)?;
     writeln!(file, "{line}")?;
 
-    // Append to session.md
-    let md_path = transcript_dir.join("session.md");
-    append_markdown(&md_path, &result)?;
+    // Append to transcript markdown
+    append_markdown(&config.transcript_path, &result)?;
 
     eprintln!("  wrote {}", json_path.display());
     Ok(())
@@ -191,17 +191,14 @@ fn format_time(seconds: f64) -> String {
 }
 
 fn append_markdown(path: &PathBuf, result: &ChunkResult) -> Result<(), Box<dyn std::error::Error>> {
-    let is_new = !path.exists();
+    let is_new = !path.exists() || fs::metadata(path).map_or(true, |m| m.len() == 0);
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)?;
 
     if is_new {
-        let date_str = path.parent()
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let (date_str, _) = crate::chunker::local_timestamp();
         writeln!(file, "# Transcript — {date_str}\n")?;
     }
 

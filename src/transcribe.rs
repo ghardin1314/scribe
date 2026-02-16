@@ -43,6 +43,8 @@ pub struct Segment {
     pub start: f64,
     pub end: f64,
     pub text: String,
+    #[serde(default)]
+    pub words: Vec<Word>,
 }
 
 #[derive(Debug, Serialize)]
@@ -101,7 +103,16 @@ pub fn transcribe(
         let status = resp.status();
 
         if status.is_success() {
-            let transcript: Transcript = resp.json()?;
+            let mut transcript: Transcript = resp.json()?;
+            // whisper.cpp nests words inside segments; OpenAI uses top-level words.
+            // Normalize: if top-level words is empty, flatten from segments.
+            if transcript.words.is_empty() {
+                transcript.words = transcript
+                    .segments
+                    .iter()
+                    .flat_map(|s| s.words.iter().cloned())
+                    .collect();
+            }
             return Ok(transcript);
         }
 

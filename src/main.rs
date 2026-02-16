@@ -1,6 +1,7 @@
 mod audio;
 mod capture;
 mod chunker;
+mod local;
 mod mixer;
 mod pipeline;
 mod transcribe;
@@ -8,6 +9,7 @@ mod transcribe;
 use capture::{Capture, MicCapture, SystemCapture};
 use chunker::ChunkConfig;
 use mixer::MixMode;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -27,9 +29,11 @@ struct Config {
     chunk_duration: u32,
     overlap: u32,
     output_dir: String,
-    live: bool,
+    output: Option<String>,
+    no_transcribe: bool,
     save_audio: bool,
     concurrency: usize,
+    local_port: Option<u16>,
 }
 
 fn parse_config() -> Config {
@@ -60,13 +64,23 @@ fn parse_config() -> Config {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
 
+    let default_output_dir = std::env::temp_dir()
+        .join("scribe")
+        .to_string_lossy()
+        .to_string();
+
     let output_dir = args
         .iter()
         .find_map(|a| a.strip_prefix("--output-dir="))
-        .unwrap_or("output")
+        .unwrap_or(&default_output_dir)
         .to_string();
 
-    let live = args.iter().any(|a| a == "--live");
+    let output = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--output="))
+        .map(|s| s.to_string());
+
+    let no_transcribe = args.iter().any(|a| a == "--no-transcribe");
     let save_audio = args.iter().any(|a| a == "--save-audio");
 
     let concurrency = args
@@ -75,7 +89,12 @@ fn parse_config() -> Config {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
 
-    Config { mode, chunk_duration, overlap, output_dir, live, save_audio, concurrency }
+    let local_port = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--local-port="))
+        .and_then(|v| v.parse().ok());
+
+    Config { mode, chunk_duration, overlap, output_dir, output, no_transcribe, save_audio, concurrency, local_port }
 }
 
 fn main() {
@@ -98,26 +117,47 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = parse_config();
 
-    if config.live {
-        match &config.mode {
-            CaptureMode::System | CaptureMode::Mic => {
-                return Err("--live requires both system + mic (don't use --system or --mic)".into());
-            }
-            _ => {}
-        }
-    }
-
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    // Validate API key early in live mode
-    let live_transcribe_config = if config.live {
-        Some(transcribe_config(&args)?)
+    // Resolve transcription backend: local (default) → API key → recording only
+    let _local_server;
+    let live_transcribe_config;
+
+    if config.no_transcribe || !matches!(&config.mode, CaptureMode::Both(_)) {
+        _local_server = None;
+        live_transcribe_config = None;
+    } else if let Ok(tc) = transcribe_config(&args) {
+        // Explicit API key takes priority
+        _local_server = None;
+        live_transcribe_config = Some(tc);
     } else {
-        None
+        // Try local whisper server
+        let model = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--model="))
+            .unwrap_or("medium");
+        match local::LocalServer::start(model, config.local_port) {
+            Ok(server) => {
+                let tc = transcribe::TranscribeConfig {
+                    api_key: String::new(),
+                    api_url: server.api_url(),
+                    model: String::new(),
+                };
+                _local_server = Some(server);
+                live_transcribe_config = Some(tc);
+            }
+            Err(e) => {
+                eprintln!("No transcription available — recording only");
+                eprintln!("  Local: {e}");
+                eprintln!("  API: OPENAI_API_KEY not set");
+                _local_server = None;
+                live_transcribe_config = None;
+            }
+        }
     };
 
     let start = Instant::now();
@@ -151,24 +191,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 mic.start()?;
 
                 if let Some(tc) = live_transcribe_config {
-                    // Live mode: split + transcription pipeline
                     let live_mode = &MixMode::Split;
                     let (tx, rx) = std::sync::mpsc::channel();
+
+                    let (date, _) = chunker::local_timestamp();
+                    let transcript_path = match &config.output {
+                        Some(p) => PathBuf::from(p),
+                        None => PathBuf::from(format!("transcript-{date}.md")),
+                    };
+
                     let pipeline_config = pipeline::PipelineConfig {
                         transcribe: tc,
                         output_dir: config.output_dir.clone(),
+                        transcript_path: transcript_path.clone(),
                         concurrency: config.concurrency,
                         save_audio: config.save_audio,
                     };
                     let handles = pipeline::run(rx, pipeline_config);
 
-                    eprintln!("Live capture + transcription ({}s chunks, {} workers)... Ctrl+C to stop.",
+                    eprintln!("Transcribing to: {}", transcript_path.display());
+                    eprintln!("Capturing ({}s chunks, {} workers)... Ctrl+C to stop.",
                         chunk_config.chunk_duration, config.concurrency);
                     chunker::run_chunked_both(&system, &mic, live_mode, &chunk_config, &running, Some(&tx))?;
 
                     drop(tx);
                     eprintln!("Waiting for transcription workers to finish...");
                     pipeline::shutdown(handles);
+
+                    eprintln!("Transcript: {}", transcript_path.display());
                 } else {
                     eprintln!("Capturing system + mic ({}s chunks)... Ctrl+C to stop.", chunk_config.chunk_duration);
                     chunker::run_chunked_both(&system, &mic, mix_mode, &chunk_config, &running, None)?;

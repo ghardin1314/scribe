@@ -199,71 +199,47 @@ Dual-channel transcription — transcribe system and mic WAVs independently, mer
 
 > **Risk: Medium** | **Effort: Medium** | **Standalone: Yes**
 
-Wire everything together: chunks flow into async queue → transcription workers → filesystem.
+Wire everything together: chunker produces split WAV pairs → worker pool transcribes each channel → merge with speaker labels → filesystem.
 
-**Implementation:**
-1. Add deps: `chrono`, `dirs`
-2. Create async channel between chunker and transcription workers
-3. Spawn N workers (default 2, `--concurrency=N`)
-4. Workers pull chunks, call API, write results to filesystem
-5. Per-chunk JSON:
-   ```json
-   {
-     "timestamp_start": "2024-01-15T14:30:00Z",
-     "timestamp_end": "2024-01-15T14:30:30Z",
-     "duration_seconds": 30,
-     "text": "...",
-     "segments": [{"start": 0.0, "end": 4.2, "text": "..."}],
-     "audio_file": "audio/2024-01-15/14-30-00.wav"
-   }
-   ```
-6. Append each result as line to `session.jsonl`
-7. Directory structure: `~/audio-capture/transcripts/<date>/`
-8. Support `--save-audio` to persist WAV chunks, otherwise delete after transcription
-9. On API failure with `--save-audio`, keep the WAV for manual retry
+**Implemented:**
+- `--live` flag: forces split mode, creates mpsc channel between chunker and worker pool
+- Worker pool (`--concurrency=N`, default 2) shares `Arc<Mutex<Receiver<ChunkPair>>>`
+- Per-channel silence detection (RMS < -40 dBFS) — skips API call for silent channels
+- Acoustic bleed dedup: strips runs of 3+ consecutive mic words matching system words at similar timestamps
+- Per-chunk output: JSON + session.jsonl + session.md (markdown transcript)
+- `--save-audio` preserves WAVs; default deletes after successful transcription
+- Graceful shutdown: drop sender → workers drain queue → join all threads
+- Failed chunks keep WAVs for `--transcribe-pair` retry
 
-**Verification:**
-- [ ] Run full capture for 2 min — `transcripts/<date>/` has per-chunk JSON files
-- [ ] `session.jsonl` has one line per chunk, valid JSON per line
-- [ ] Timestamps in JSON match wall clock
-- [ ] `--save-audio` — WAV files persist in `audio/<date>/`
-- [ ] Without `--save-audio` — no WAV files remain
-- [ ] Kill API mid-run — capture continues, failed chunks logged
-
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
 
 ---
 
-### Phase 7: CLI + Config
+### Phase 7: Default UX
 
 > **Risk: Low** | **Effort: Low** | **Standalone: Yes**
 
+Make live transcription the default experience. Running `scribe` with `OPENAI_API_KEY` set should just work — producing a clean markdown transcript in the current directory while intermediates go to a temp dir.
+
 **Implementation:**
-1. Add deps: `clap` (derive), `toml`
-2. Subcommands: `start`, `stop`, `status`, `list`, `export`
-3. `start` flags:
-   ```
-   --chunk-duration=30      --overlap=0
-   --no-mic                 --no-system
-   --save-audio             --api-url=URL
-   --concurrency=2          --output-dir=PATH
-   --mix-mode=stereo|split  --device=NAME
-   -v, --verbose
-   ```
-4. Load `~/.audio-capture/config.toml` if present
-5. Merge: CLI flags > config file > defaults
-6. `list` — show recent sessions (date, duration, chunk count)
-7. `export --date=today --format=markdown` — concatenate transcripts
+1. Auto-live: when `OPENAI_API_KEY` is set and mode is Both, enable live pipeline automatically
+2. Default `output_dir` → `/tmp/scribe/` (intermediate WAVs, JSON, JSONL)
+3. Markdown transcript → `./transcript-{date}.md` in current directory
+4. `--output=PATH` to override markdown output location
+5. Remove `--live` flag (now default behavior)
+6. Add `--no-transcribe` to opt out of live transcription
+7. Print transcript path on exit
 
 **Verification:**
-- [ ] `scribe start --chunk-duration=15 --no-mic --save-audio -v` — all flags respected
-- [ ] Config file sets `chunk_duration = 45` — used when no flag passed
-- [ ] CLI flag overrides config file value
-- [ ] `scribe list` — shows sessions
-- [ ] `scribe export --date=today --format=markdown` — readable output
-- [ ] `scribe start` with no config and no flags — sensible defaults
+- [ ] `OPENAI_API_KEY=sk-... scribe` — captures, transcribes, writes `transcript-2026-02-15.md`
+- [ ] Intermediates land in `/tmp/scribe/`, not current directory
+- [ ] `scribe --no-transcribe` — capture only, WAVs in temp dir
+- [ ] `scribe --output=meeting.md` — transcript written to custom path
+- [ ] `scribe --save-audio --output-dir=./saved` — intermediates go to `./saved/`
+- [ ] No API key set — capture only with message about setting key
+- [ ] `--system` or `--mic` only — capture only, no pipeline
 
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
 
 ---
 
@@ -323,6 +299,6 @@ Phase 5 can be built in parallel with Phases 1-4.
 | 4 | Chunking | `[x] Complete` |
 | 5 | Transcription API Client | `[x] Complete` |
 | 5b | Speaker-Attributed Transcription | `[x] Complete` |
-| 6 | Pipeline Integration | `[ ] Not started` |
-| 7 | CLI + Config | `[ ] Not started` |
+| 6 | Pipeline Integration | `[x] Complete` |
+| 7 | Default UX | `[x] Complete` |
 | 8 | Daemon Mode + Signals | `[ ] Not started` |
