@@ -2,6 +2,7 @@ mod audio;
 mod capture;
 mod chunker;
 mod mixer;
+mod transcribe;
 
 use capture::{Capture, MicCapture, SystemCapture};
 use chunker::ChunkConfig;
@@ -72,6 +73,12 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+
+    if let Some(path) = args.iter().find_map(|a| a.strip_prefix("--transcribe=")) {
+        return run_transcribe(path, &args);
+    }
+
     let config = parse_config();
 
     let running = Arc::new(AtomicBool::new(true));
@@ -250,5 +257,27 @@ fn run_both(
         }
     }
 
+    Ok(())
+}
+
+fn run_transcribe(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| "OPENAI_API_KEY not set")?;
+
+    let api_url = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--api-url="))
+        .unwrap_or("https://api.openai.com/v1/audio/transcriptions")
+        .to_string();
+
+    let model = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--model="))
+        .unwrap_or("whisper-1")
+        .to_string();
+
+    let config = transcribe::TranscribeConfig { api_key, api_url, model };
+    let result = transcribe::transcribe(path, &config)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
