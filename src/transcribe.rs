@@ -19,11 +19,20 @@ impl Default for TranscribeConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Word {
+    pub word: String,
+    pub start: f64,
+    pub end: f64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Transcript {
     pub text: String,
     #[serde(default)]
     pub segments: Vec<Segment>,
+    #[serde(default)]
+    pub words: Vec<Word>,
     #[serde(default)]
     pub duration: f64,
 }
@@ -33,6 +42,21 @@ pub struct Segment {
     pub start: f64,
     pub end: f64,
     pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SpeakerSegment {
+    pub speaker: String,
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+    pub words: Vec<Word>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MergedTranscript {
+    pub segments: Vec<SpeakerSegment>,
+    pub duration: f64,
 }
 
 pub fn transcribe(
@@ -63,7 +87,9 @@ pub fn transcribe(
         let form = reqwest::blocking::multipart::Form::new()
             .part("file", part)
             .text("model", config.model.clone())
-            .text("response_format", "verbose_json");
+            .text("response_format", "verbose_json")
+            .text("timestamp_granularities[]", "word")
+            .text("timestamp_granularities[]", "segment");
 
         let resp = client
             .post(&config.api_url)
@@ -91,4 +117,35 @@ pub fn transcribe(
         eprintln!("Retrying in {}s (attempt {attempt}/{max_retries})...", delay.as_secs());
         thread::sleep(delay);
     }
+}
+
+pub fn merge_transcripts(system: Transcript, mic: Transcript) -> MergedTranscript {
+    let duration = system.duration.max(mic.duration);
+
+    let to_speaker_segments = |t: Transcript, speaker: &str| -> Vec<SpeakerSegment> {
+        let words = t.words;
+        t.segments
+            .into_iter()
+            .map(|seg| {
+                let seg_words: Vec<Word> = words
+                    .iter()
+                    .filter(|w| w.start >= seg.start && w.end <= seg.end)
+                    .cloned()
+                    .collect();
+                SpeakerSegment {
+                    speaker: speaker.to_string(),
+                    start: seg.start,
+                    end: seg.end,
+                    text: seg.text,
+                    words: seg_words,
+                }
+            })
+            .collect()
+    };
+
+    let mut segments = to_speaker_segments(system, "other");
+    segments.extend(to_speaker_segments(mic, "you"));
+    segments.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+
+    MergedTranscript { segments, duration }
 }

@@ -75,6 +75,10 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
+    if let Some(pair) = args.iter().find_map(|a| a.strip_prefix("--transcribe-pair=")) {
+        return run_transcribe_pair(pair, &args);
+    }
+
     if let Some(path) = args.iter().find_map(|a| a.strip_prefix("--transcribe=")) {
         return run_transcribe(path, &args);
     }
@@ -260,7 +264,7 @@ fn run_both(
     Ok(())
 }
 
-fn run_transcribe(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+fn transcribe_config(args: &[String]) -> Result<transcribe::TranscribeConfig, Box<dyn std::error::Error>> {
     let api_key = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "OPENAI_API_KEY not set")?;
 
@@ -276,8 +280,30 @@ fn run_transcribe(path: &str, args: &[String]) -> Result<(), Box<dyn std::error:
         .unwrap_or("whisper-1")
         .to_string();
 
-    let config = transcribe::TranscribeConfig { api_key, api_url, model };
+    Ok(transcribe::TranscribeConfig { api_key, api_url, model })
+}
+
+fn run_transcribe(path: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let config = transcribe_config(args)?;
     let result = transcribe::transcribe(path, &config)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+fn run_transcribe_pair(pair: &str, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (system_path, mic_path) = pair
+        .split_once(',')
+        .ok_or("--transcribe-pair expects SYSTEM.wav,MIC.wav")?;
+
+    let config = transcribe_config(args)?;
+
+    eprintln!("Transcribing system audio: {system_path}");
+    let system = transcribe::transcribe(system_path, &config)?;
+
+    eprintln!("Transcribing mic audio: {mic_path}");
+    let mic = transcribe::transcribe(mic_path, &config)?;
+
+    let merged = transcribe::merge_transcripts(system, mic);
+    println!("{}", serde_json::to_string_pretty(&merged)?);
     Ok(())
 }

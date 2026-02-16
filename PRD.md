@@ -116,7 +116,7 @@ Validates that both capture streams run concurrently without glitches or drift.
 - [ ] Verify output is 16kHz/16-bit via `ffprobe` or Audacity
 - [ ] Test `split` mode — produces two separate files
 
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
 
 ---
 
@@ -140,7 +140,7 @@ Time-based buffer rotation — no new external deps.
 - [ ] Test `--overlap=5` — each chunk starts 5s before previous ended
 - [ ] Test `--chunk-duration=10` — get 9 files in 90s
 
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
 
 ---
 
@@ -168,7 +168,30 @@ Can be developed and tested entirely with pre-recorded WAV files — no audio ca
 - [ ] Bad API key — clear error after retry exhaustion
 - [ ] Test with local Whisper server via `--api-url`
 
-**Progress:** `[ ] Not started`
+**Progress:** `[x] Complete`
+
+---
+
+### Phase 5b: Speaker-Attributed Transcription
+
+> **Risk: Low** | **Effort: Low** | **Standalone: Yes**
+
+Dual-channel transcription — transcribe system and mic WAVs independently, merge by timestamp. Speaker identity comes free from capture source (no ML diarization needed).
+
+**Implementation:**
+1. Add `timestamp_granularities[]=word` and `=segment` to API request
+2. Add `Word { word, start, end }` struct, `words` field on `Transcript`
+3. Add `SpeakerSegment` and `MergedTranscript` types
+4. `merge_transcripts(system, mic)` — labels system `"other"`, mic `"you"`, attaches words to parent segments by time range, sorts by start time
+5. Add `--transcribe-pair=SYSTEM.wav,MIC.wav` CLI flag
+6. Overlapping speech interleaves naturally — no dedup needed
+
+**Verification:**
+- [x] `--transcribe-pair=system.wav,mic.wav` — merged JSON with speaker labels and interleaved segments
+- [x] `--transcribe=chunk.wav` — still works, now includes `words` array
+- [x] Word timestamps present when API supports it, empty array when not
+
+**Progress:** `[x] Complete`
 
 ---
 
@@ -296,9 +319,10 @@ Phase 5 can be built in parallel with Phases 1-4.
 |-------|-------------|--------|
 | 1 | System Audio Capture | `[x] Complete` |
 | 2 | Microphone Capture | `[x] Complete` |
-| 3 | Mixing + Resampling | `[ ] Not started` |
-| 4 | Chunking | `[ ] Not started` |
-| 5 | Transcription API Client | `[ ] Not started` |
+| 3 | Mixing + Resampling | `[x] Complete` |
+| 4 | Chunking | `[x] Complete` |
+| 5 | Transcription API Client | `[x] Complete` |
+| 5b | Speaker-Attributed Transcription | `[x] Complete` |
 | 6 | Pipeline Integration | `[ ] Not started` |
 | 7 | CLI + Config | `[ ] Not started` |
 | 8 | Daemon Mode + Signals | `[ ] Not started` |
