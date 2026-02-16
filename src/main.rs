@@ -1,8 +1,11 @@
 mod audio;
 mod capture;
+mod chunker;
 mod mixer;
 
 use capture::{Capture, MicCapture, SystemCapture};
+use chunker::ChunkConfig;
+use mixer::MixMode;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -11,20 +14,23 @@ use std::time::Instant;
 
 const TARGET_RATE: u32 = 16000;
 
-enum MixMode {
-    Stereo,
-    Split,
-}
-
 enum CaptureMode {
     System,
     Mic,
     Both(MixMode),
 }
 
-fn parse_mode() -> CaptureMode {
+struct Config {
+    mode: CaptureMode,
+    chunk_duration: u32,
+    overlap: u32,
+    output_dir: String,
+}
+
+fn parse_config() -> Config {
     let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--system") {
+
+    let mode = if args.iter().any(|a| a == "--system") {
         CaptureMode::System
     } else if args.iter().any(|a| a == "--mic") {
         CaptureMode::Mic
@@ -35,7 +41,27 @@ fn parse_mode() -> CaptureMode {
             MixMode::Stereo
         };
         CaptureMode::Both(mix_mode)
-    }
+    };
+
+    let chunk_duration = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--chunk-duration="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
+
+    let overlap = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--overlap="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let output_dir = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--output-dir="))
+        .unwrap_or("output")
+        .to_string();
+
+    Config { mode, chunk_duration, overlap, output_dir }
 }
 
 fn main() {
@@ -46,7 +72,7 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mode = parse_mode();
+    let config = parse_config();
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -56,25 +82,60 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let start = Instant::now();
 
-    match mode {
-        CaptureMode::System => {
-            run_single(
-                Box::new(SystemCapture::new()?),
-                "system audio",
-                "output.wav",
-                &running,
-            )?;
+    if config.chunk_duration > 0 {
+        let chunk_config = ChunkConfig {
+            chunk_duration: config.chunk_duration,
+            overlap: config.overlap,
+            output_dir: config.output_dir,
+        };
+
+        match config.mode {
+            CaptureMode::System => {
+                let cap = SystemCapture::new()?;
+                cap.start()?;
+                eprintln!("Capturing system audio ({}s chunks)... Ctrl+C to stop.", chunk_config.chunk_duration);
+                chunker::run_chunked_single(&cap, "system", &chunk_config, &running)?;
+                cap.stop()?;
+            }
+            CaptureMode::Mic => {
+                let cap = MicCapture::new()?;
+                cap.start()?;
+                eprintln!("Capturing microphone ({}s chunks)... Ctrl+C to stop.", chunk_config.chunk_duration);
+                chunker::run_chunked_single(&cap, "mic", &chunk_config, &running)?;
+                cap.stop()?;
+            }
+            CaptureMode::Both(ref mix_mode) => {
+                let system = SystemCapture::new()?;
+                let mic = MicCapture::new()?;
+                system.start()?;
+                mic.start()?;
+                eprintln!("Capturing system + mic ({}s chunks)... Ctrl+C to stop.", chunk_config.chunk_duration);
+                chunker::run_chunked_both(&system, &mic, mix_mode, &chunk_config, &running)?;
+                system.stop()?;
+                mic.stop()?;
+            }
         }
-        CaptureMode::Mic => {
-            run_single(
-                Box::new(MicCapture::new()?),
-                "microphone",
-                "output_mic.wav",
-                &running,
-            )?;
-        }
-        CaptureMode::Both(mix_mode) => {
-            run_both(mix_mode, &running)?;
+    } else {
+        match config.mode {
+            CaptureMode::System => {
+                run_single(
+                    Box::new(SystemCapture::new()?),
+                    "system audio",
+                    "output.wav",
+                    &running,
+                )?;
+            }
+            CaptureMode::Mic => {
+                run_single(
+                    Box::new(MicCapture::new()?),
+                    "microphone",
+                    "output_mic.wav",
+                    &running,
+                )?;
+            }
+            CaptureMode::Both(mix_mode) => {
+                run_both(mix_mode, &running)?;
+            }
         }
     }
 
@@ -93,13 +154,27 @@ fn run_single(
     capture.start()?;
     eprintln!("Capturing {label}... Press Ctrl+C to stop.");
 
-    let samples = audio::capture_loop(capture.as_ref(), running);
+    let rx = capture.rx();
+    let rate = capture.sample_rate();
+    let channels = capture.channels();
+
+    let mut samples: Vec<f32> = Vec::new();
+    while running.load(Ordering::SeqCst) {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(chunk) => samples.extend(chunk),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    while let Ok(chunk) = rx.try_recv() {
+        samples.extend(chunk);
+    }
 
     eprintln!("Stopping capture...");
     capture.stop()?;
 
-    let mono = mixer::to_mono(&samples, capture.channels());
-    let resampled = mixer::resample(&mono, capture.sample_rate(), TARGET_RATE);
+    let mono = mixer::to_mono(&samples, channels);
+    let resampled = mixer::resample(&mono, rate, TARGET_RATE);
     let pcm = mixer::f32_to_i16(&resampled);
     audio::write_wav_i16(path, &pcm, TARGET_RATE, 1)?;
 
@@ -122,7 +197,32 @@ fn run_both(
     mic.start()?;
     eprintln!("Capturing system audio + mic... Press Ctrl+C to stop.");
 
-    let (sys_samples, mic_samples) = mixer::dual_capture_loop(&system, &mic, running);
+    // Inline dual capture loop
+    let sys_rx = system.rx();
+    let mic_rx = mic.rx();
+    let mut sys_samples: Vec<f32> = Vec::new();
+    let mut mic_samples: Vec<f32> = Vec::new();
+
+    while running.load(Ordering::SeqCst) {
+        let mut got_data = false;
+        while let Ok(chunk) = sys_rx.try_recv() {
+            sys_samples.extend(chunk);
+            got_data = true;
+        }
+        while let Ok(chunk) = mic_rx.try_recv() {
+            mic_samples.extend(chunk);
+            got_data = true;
+        }
+        if !got_data {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+    while let Ok(chunk) = sys_rx.try_recv() {
+        sys_samples.extend(chunk);
+    }
+    while let Ok(chunk) = mic_rx.try_recv() {
+        mic_samples.extend(chunk);
+    }
 
     eprintln!("Stopping capture...");
     system.stop()?;

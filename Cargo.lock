@@ -582,6 +582,7 @@ dependencies = [
  "cpal",
  "ctrlc",
  "hound",
+ "libc",
  "rubato",
  "screencapturekit",
 ]

@@ -1,7 +1,9 @@
-use crate::capture::Capture;
 use rubato::{FftFixedIn, Resampler};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+
+pub enum MixMode {
+    Stereo,
+    Split,
+}
 
 pub fn to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     if channels == 1 {
@@ -84,51 +86,3 @@ pub fn f32_to_i16(samples: &[f32]) -> Vec<i16> {
         .collect()
 }
 
-pub fn dual_capture_loop(
-    system: &dyn Capture,
-    mic: &dyn Capture,
-    running: &AtomicBool,
-) -> (Vec<f32>, Vec<f32>) {
-    let sys_rx = system.rx();
-    let mic_rx = mic.rx();
-
-    let mut sys_samples: Vec<f32> = Vec::new();
-    let mut mic_samples: Vec<f32> = Vec::new();
-    let mut last_report = Instant::now();
-
-    while running.load(Ordering::SeqCst) {
-        let mut got_data = false;
-
-        while let Ok(chunk) = sys_rx.try_recv() {
-            sys_samples.extend(chunk);
-            got_data = true;
-        }
-        while let Ok(chunk) = mic_rx.try_recv() {
-            mic_samples.extend(chunk);
-            got_data = true;
-        }
-
-        if !got_data {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-
-        if last_report.elapsed() >= Duration::from_secs(5) {
-            let sys_dur = sys_samples.len() as f64
-                / (system.sample_rate() as f64 * system.channels() as f64);
-            let mic_dur = mic_samples.len() as f64
-                / (mic.sample_rate() as f64 * mic.channels() as f64);
-            eprintln!("  system: {sys_dur:.1}s, mic: {mic_dur:.1}s captured...");
-            last_report = Instant::now();
-        }
-    }
-
-    // Final drain
-    while let Ok(chunk) = sys_rx.try_recv() {
-        sys_samples.extend(chunk);
-    }
-    while let Ok(chunk) = mic_rx.try_recv() {
-        mic_samples.extend(chunk);
-    }
-
-    (sys_samples, mic_samples)
-}
