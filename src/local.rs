@@ -1,3 +1,4 @@
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -59,15 +60,22 @@ impl LocalServer {
             model_path.display()
         );
 
-        let child = Command::new(&binary)
-            .arg("-m")
-            .arg(&model_path)
-            .arg("--port")
-            .arg(port.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to start {binary}: {e}"))?;
+        // Own process group so Ctrl+C doesn't kill the server prematurely
+        let child = unsafe {
+            Command::new(&binary)
+                .arg("-m")
+                .arg(&model_path)
+                .arg("--port")
+                .arg(port.to_string())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .pre_exec(|| {
+                    libc::setpgid(0, 0);
+                    Ok(())
+                })
+                .spawn()
+                .map_err(|e| format!("Failed to start {binary}: {e}"))?
+        };
 
         let server = LocalServer { child, port };
         server.wait_ready()?;
