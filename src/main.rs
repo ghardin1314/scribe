@@ -104,8 +104,41 @@ fn main() {
     }
 }
 
+fn print_help() {
+    eprintln!("scribe — capture system audio + mic, transcribe locally
+
+USAGE:
+    scribe [OPTIONS]
+
+By default, captures both channels and transcribes using a local
+whisper server. Falls back to OpenAI API if OPENAI_API_KEY is set.
+Writes transcript to ./transcript-{{date}}.md
+
+OPTIONS:
+    --output=PATH          Transcript output path (default: transcript-{{date}}.md)
+    --output-dir=PATH      Intermediate files directory (default: /tmp/scribe)
+    --chunk-duration=N     Chunk length in seconds (default: 30)
+    --overlap=N            Overlap between chunks in seconds (default: 0)
+    --concurrency=N        Transcription worker threads (default: 2)
+    --model=NAME           Local whisper model size (default: medium)
+    --local-port=N         Local whisper server port (default: 8080)
+    --save-audio           Keep WAV files after transcription
+    --no-transcribe        Capture only, no transcription
+    --system               Capture system audio only
+    --mic                  Capture microphone only
+    --api-url=URL          Custom transcription API endpoint
+    --transcribe=FILE      Transcribe a single WAV file
+    --transcribe-pair=S,M  Transcribe a system,mic WAV pair
+    -h, --help             Show this help");
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
 
     if let Some(pair) = args.iter().find_map(|a| a.strip_prefix("--transcribe-pair=")) {
         return run_transcribe_pair(pair, &args);
