@@ -1,8 +1,10 @@
 use crate::audio;
 use crate::capture::Capture;
 use crate::mixer::{self, MixMode};
+use crate::pipeline::ChunkPair;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
 const TARGET_RATE: u32 = 16000;
@@ -14,7 +16,7 @@ pub struct ChunkConfig {
 }
 
 /// Returns (date, time) e.g. ("2026-02-15", "14-30-05")
-fn local_timestamp() -> (String, String) {
+pub(crate) fn local_timestamp() -> (String, String) {
     unsafe {
         let mut t: libc::time_t = 0;
         libc::time(&mut t);
@@ -54,6 +56,7 @@ fn flush_chunk_both(
     mic_ch: u16,
     mix_mode: &MixMode,
     dir: &PathBuf,
+    chunk_tx: Option<&Sender<ChunkPair>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if sys_buf.is_empty() && mic_buf.is_empty() {
         return Ok(());
@@ -62,7 +65,7 @@ fn flush_chunk_both(
     let sys_processed = process_source(sys_buf, sys_rate, sys_ch);
     let mic_processed = process_source(mic_buf, mic_rate, mic_ch);
 
-    let (_, time) = local_timestamp();
+    let (date, time) = local_timestamp();
 
     match mix_mode {
         MixMode::Stereo => {
@@ -78,6 +81,15 @@ fn flush_chunk_both(
             let mic_path = dir.join(format!("{time}_mic.wav"));
             audio::write_wav_i16(sys_path.to_str().unwrap(), &sys_pcm, TARGET_RATE, 1)?;
             audio::write_wav_i16(mic_path.to_str().unwrap(), &mic_pcm, TARGET_RATE, 1)?;
+
+            if let Some(tx) = chunk_tx {
+                let _ = tx.send(ChunkPair {
+                    timestamp: time,
+                    date,
+                    system_path: sys_path,
+                    mic_path: mic_path,
+                });
+            }
         }
     }
 
@@ -116,6 +128,7 @@ pub fn run_chunked_both(
     mix_mode: &MixMode,
     config: &ChunkConfig,
     running: &AtomicBool,
+    chunk_tx: Option<&Sender<ChunkPair>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sys_rx = system.rx();
     let mic_rx = mic.rx();
@@ -162,7 +175,7 @@ pub fn run_chunked_both(
             flush_chunk_both(
                 &sys_buf, &mic_buf,
                 sys_rate, sys_ch, mic_rate, mic_ch,
-                mix_mode, &dir,
+                mix_mode, &dir, chunk_tx,
             )?;
             chunk_count += 1;
 
@@ -194,7 +207,7 @@ pub fn run_chunked_both(
     flush_chunk_both(
         &sys_buf, &mic_buf,
         sys_rate, sys_ch, mic_rate, mic_ch,
-        mix_mode, &dir,
+        mix_mode, &dir, chunk_tx,
     )?;
     if !sys_buf.is_empty() || !mic_buf.is_empty() {
         chunk_count += 1;

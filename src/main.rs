@@ -2,6 +2,7 @@ mod audio;
 mod capture;
 mod chunker;
 mod mixer;
+mod pipeline;
 mod transcribe;
 
 use capture::{Capture, MicCapture, SystemCapture};
@@ -26,6 +27,9 @@ struct Config {
     chunk_duration: u32,
     overlap: u32,
     output_dir: String,
+    live: bool,
+    save_audio: bool,
+    concurrency: usize,
 }
 
 fn parse_config() -> Config {
@@ -62,7 +66,16 @@ fn parse_config() -> Config {
         .unwrap_or("output")
         .to_string();
 
-    Config { mode, chunk_duration, overlap, output_dir }
+    let live = args.iter().any(|a| a == "--live");
+    let save_audio = args.iter().any(|a| a == "--save-audio");
+
+    let concurrency = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--concurrency="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+
+    Config { mode, chunk_duration, overlap, output_dir, live, save_audio, concurrency }
 }
 
 fn main() {
@@ -85,11 +98,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = parse_config();
 
+    if config.live {
+        match &config.mode {
+            CaptureMode::System | CaptureMode::Mic => {
+                return Err("--live requires both system + mic (don't use --system or --mic)".into());
+            }
+            _ => {}
+        }
+    }
+
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     })?;
+
+    // Validate API key early in live mode
+    let live_transcribe_config = if config.live {
+        Some(transcribe_config(&args)?)
+    } else {
+        None
+    };
 
     let start = Instant::now();
 
@@ -97,7 +126,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let chunk_config = ChunkConfig {
             chunk_duration: config.chunk_duration,
             overlap: config.overlap,
-            output_dir: config.output_dir,
+            output_dir: config.output_dir.clone(),
         };
 
         match config.mode {
@@ -120,8 +149,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let mic = MicCapture::new()?;
                 system.start()?;
                 mic.start()?;
-                eprintln!("Capturing system + mic ({}s chunks)... Ctrl+C to stop.", chunk_config.chunk_duration);
-                chunker::run_chunked_both(&system, &mic, mix_mode, &chunk_config, &running)?;
+
+                if let Some(tc) = live_transcribe_config {
+                    // Live mode: split + transcription pipeline
+                    let live_mode = &MixMode::Split;
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let pipeline_config = pipeline::PipelineConfig {
+                        transcribe: tc,
+                        output_dir: config.output_dir.clone(),
+                        concurrency: config.concurrency,
+                        save_audio: config.save_audio,
+                    };
+                    let handles = pipeline::run(rx, pipeline_config);
+
+                    eprintln!("Live capture + transcription ({}s chunks, {} workers)... Ctrl+C to stop.",
+                        chunk_config.chunk_duration, config.concurrency);
+                    chunker::run_chunked_both(&system, &mic, live_mode, &chunk_config, &running, Some(&tx))?;
+
+                    drop(tx);
+                    eprintln!("Waiting for transcription workers to finish...");
+                    pipeline::shutdown(handles);
+                } else {
+                    eprintln!("Capturing system + mic ({}s chunks)... Ctrl+C to stop.", chunk_config.chunk_duration);
+                    chunker::run_chunked_both(&system, &mic, mix_mode, &chunk_config, &running, None)?;
+                }
+
                 system.stop()?;
                 mic.stop()?;
             }
@@ -303,7 +355,7 @@ fn run_transcribe_pair(pair: &str, args: &[String]) -> Result<(), Box<dyn std::e
     eprintln!("Transcribing mic audio: {mic_path}");
     let mic = transcribe::transcribe(mic_path, &config)?;
 
-    let merged = transcribe::merge_transcripts(system, mic);
+    let merged = transcribe::merge_transcripts(Some(system), Some(mic));
     println!("{}", serde_json::to_string_pretty(&merged)?);
     Ok(())
 }
