@@ -33,6 +33,7 @@ struct Config {
     no_transcribe: bool,
     save_audio: bool,
     concurrency: usize,
+    use_local: bool,
     local_port: Option<u16>,
 }
 
@@ -96,12 +97,14 @@ fn parse_config() -> Config {
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
 
+    let use_local = args.iter().any(|a| a == "--local");
+
     let local_port = args
         .iter()
         .find_map(|a| a.strip_prefix("--local-port="))
         .and_then(|v| v.parse().ok());
 
-    Config { mode, chunk_duration, overlap, output_dir, output, no_transcribe, save_audio, concurrency, local_port }
+    Config { mode, chunk_duration, overlap, output_dir, output, no_transcribe, save_audio, concurrency, use_local, local_port }
 }
 
 fn main() {
@@ -112,13 +115,13 @@ fn main() {
 }
 
 fn print_help() {
-    eprintln!("scribe — capture system audio + mic, transcribe locally
+    eprintln!("scribe — capture system audio + mic and transcribe
 
 USAGE:
     scribe [FILE] [OPTIONS]
 
-By default, captures both channels and transcribes using a local
-whisper server. Falls back to OpenAI API if OPENAI_API_KEY is set.
+By default, captures both channels and transcribes via OpenAI Whisper
+API (requires OPENAI_API_KEY). Use --local for local whisper-cpp server.
 Writes transcript to ./transcript-{{date}}.md
 
 OPTIONS:
@@ -128,7 +131,8 @@ OPTIONS:
     --chunk-duration=N     Chunk length in seconds (default: 30)
     --overlap=N            Overlap between chunks in seconds (default: 0)
     --concurrency=N        Transcription worker threads (default: 2)
-    --model=NAME           Local whisper model size (default: medium)
+    --local                Use local whisper-cpp server instead of OpenAI API
+    --model=NAME           Local whisper model size (default: large-v3-turbo)
     --local-port=N         Local whisper server port (default: 8080)
     --save-audio           Keep WAV files after transcription
     --no-transcribe        Capture only, no transcription
@@ -164,24 +168,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         r.store(false, Ordering::SeqCst);
     })?;
 
-    // Resolve transcription backend: --api-url → local (default) → recording only
-    let has_api_url = args.iter().any(|a| a.starts_with("--api-url="));
+    // Resolve transcription backend: --local → --api-url → OpenAI API (default)
     let _local_server;
     let live_transcribe_config;
 
     if config.no_transcribe || !matches!(&config.mode, CaptureMode::Both(_)) {
         _local_server = None;
         live_transcribe_config = None;
-    } else if has_api_url {
-        // Explicit --api-url: use remote API
-        _local_server = None;
-        live_transcribe_config = Some(transcribe_config(&args)?);
-    } else {
-        // Default: local whisper server
+    } else if config.use_local {
+        // --local: start local whisper-cpp server
         let model = args
             .iter()
             .find_map(|a| a.strip_prefix("--model="))
-            .unwrap_or("medium");
+            .unwrap_or("large-v3-turbo");
         match local::LocalServer::start(model, config.local_port) {
             Ok(server) => {
                 let tc = transcribe::TranscribeConfig {
@@ -193,9 +192,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 live_transcribe_config = Some(tc);
             }
             Err(e) => {
-                eprintln!("No transcription available — recording only");
+                eprintln!("Local whisper server failed — recording only");
                 eprintln!("  {e}");
                 _local_server = None;
+                live_transcribe_config = None;
+            }
+        }
+    } else {
+        // Default: OpenAI Whisper API (or --api-url)
+        _local_server = None;
+        match transcribe_config(&args) {
+            Ok(tc) => live_transcribe_config = Some(tc),
+            Err(_) => {
+                eprintln!("OPENAI_API_KEY not set — recording only (no transcription)");
+                eprintln!("  Set OPENAI_API_KEY or use --local for local whisper");
                 live_transcribe_config = None;
             }
         }

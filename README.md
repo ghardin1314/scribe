@@ -18,8 +18,8 @@ scribe
 - **Whisper model file:**
   ```bash
   mkdir -p ~/.cache/whisper
-  curl -L -o ~/.cache/whisper/ggml-medium.bin \
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin"
+  curl -L -o ~/.cache/whisper/ggml-large-v3-turbo.bin \
+    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"
   ```
 
 ### macOS Permissions
@@ -54,7 +54,7 @@ scribe --mic                        # microphone only
 **Local (default):** Automatically starts a local `whisper-server`, transcribes on-device. No API key needed.
 
 ```bash
-scribe                              # uses whisper-server + medium model
+scribe                              # uses whisper-server + large-v3-turbo model
 scribe --model=small                # faster, less accurate
 scribe --model=large                # slower, more accurate
 ```
